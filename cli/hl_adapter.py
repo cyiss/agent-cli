@@ -89,7 +89,36 @@ class DirectHLProxy:
             return MarketSnapshot(instrument=instrument)
 
     def get_account_state(self) -> Dict:
-        return self._hl.get_account_state()
+        """Fetch account state directly from HL Info API."""
+        try:
+            state = self._info.user_state(self._address)
+            margin_summary = state.get("marginSummary", {})
+            return {
+                "account_value": float(margin_summary.get("accountValue", 0)),
+                "total_margin": float(margin_summary.get("totalMarginUsed", 0)),
+                "withdrawable": float(state.get("withdrawable", 0)),
+                "address": self._address,
+                "positions": state.get("assetPositions", []),
+            }
+        except Exception as e:
+            log.error("Failed to get account state: %s", e)
+            return {}
+
+    def _get_tick_size(self, coin: str) -> float:
+        """Get the tick size for an asset from HL metadata."""
+        try:
+            meta = self._info.meta()
+            for asset in meta.get("universe", []):
+                if asset.get("name") == coin:
+                    return float(asset.get("szDecimals", 1))
+            return 0.1  # default
+        except Exception:
+            return 0.1
+
+    @staticmethod
+    def _round_price(price: float, tick: float = 0.1) -> float:
+        """Round price to HL tick size."""
+        return round(round(price / tick) * tick, 8)
 
     def place_order(
         self,
@@ -103,15 +132,21 @@ class DirectHLProxy:
         coin = _to_hl_coin(instrument)
         is_buy = side.lower() == "buy"
 
-        # Oracle-based price safety for IOC
+        # Round price to HL tick size (0.1 for most assets)
+        price = self._round_price(price)
+
+        # For IOC orders, apply slippage to cross the spread and guarantee fill.
+        # Strategy prices are often at fair value (inside the spread) which won't
+        # match any resting orders. Push buys above ask, sells below bid.
         if tif == "Ioc":
-            oracle_prices = self._hl._get_oracle_prices()
-            oracle = oracle_prices.get(coin, 0)
-            if oracle > 0:
-                if is_buy:
-                    price = min(price, round(oracle * 1.003, 1))
-                else:
-                    price = max(price, round(oracle * 0.997, 1))
+            try:
+                snap = self._hl.get_snapshot(instrument)
+                if is_buy and snap.ask > 0:
+                    price = max(price, self._round_price(snap.ask * 1.005))
+                elif not is_buy and snap.bid > 0:
+                    price = min(price, self._round_price(snap.bid * 0.995))
+            except Exception:
+                pass  # use original price if snapshot fails
 
         try:
             result = self._exchange.order(
