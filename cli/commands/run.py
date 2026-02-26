@@ -136,4 +136,21 @@ def run_cmd(
         data_dir=cfg.data_dir,
         risk_limits=cfg.to_risk_limits(),
     )
+
+    # Attach DSL guard if configured
+    if cfg.dsl and cfg.dsl.get("enabled"):
+        from modules.dsl_config import DSLConfig, PRESETS
+
+        preset_name = cfg.dsl.get("preset")
+        if preset_name and preset_name in PRESETS:
+            dsl_cfg = DSLConfig.from_dict(PRESETS[preset_name].to_dict())
+        else:
+            dsl_cfg = DSLConfig.from_dict(cfg.dsl)
+
+        if "leverage" in cfg.dsl:
+            dsl_cfg.leverage = float(cfg.dsl["leverage"])
+
+        engine.dsl_config = dsl_cfg
+        typer.echo(f"DSL: enabled (preset={preset_name or 'custom'}, tiers={len(dsl_cfg.tiers)})")
+
     engine.run(max_ticks=cfg.max_ticks, resume=resume)

@@ -23,12 +23,14 @@ from cli.commands.status import status_cmd
 from cli.commands.trade import trade_cmd
 from cli.commands.account import account_cmd
 from cli.commands.strategies import strategies_cmd
+from cli.commands.dsl import dsl_app
 
 app.command("run", help="Start autonomous trading with a strategy")(run_cmd)
 app.command("status", help="Show positions, PnL, and risk state")(status_cmd)
 app.command("trade", help="Place a single manual order")(trade_cmd)
 app.command("account", help="Show HL account state")(account_cmd)
 app.command("strategies", help="List available strategies")(strategies_cmd)
+app.add_typer(dsl_app, name="dsl", help="Dynamic Stop Loss trailing stop system")
 
 
 def main():

@@ -14,6 +14,9 @@ class TradingConfig:
     strategy: str = "avellaneda_mm"
     strategy_params: Dict[str, Any] = field(default_factory=dict)
 
+    # DSL (Dynamic Stop Loss) — optional composable guard
+    dsl: Dict[str, Any] = field(default_factory=dict)
+
     # Instrument
     instrument: str = "ETH-PERP"
 
