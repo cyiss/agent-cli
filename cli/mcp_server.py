@@ -259,4 +259,63 @@ def create_mcp_server():
             args.extend(["--since", since])
         return _run_hl(*args)
 
+    # ------------------------------------------------------------------
+    # Self-improvement tools — memory, journal, judge, obsidian
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    def agent_memory(query_type: str = "recent", limit: int = 20, event_type: Optional[str] = None) -> str:
+        """Read agent memory — learnings, param changes, market observations.
+
+        Args:
+            query_type: "recent" for latest events, "playbook" for accumulated knowledge
+            limit: Max events to return (default 20)
+            event_type: Filter by type (param_change, howl_review, notable_trade, judge_finding, session_start, session_end)
+        """
+        from modules.memory_guard import MemoryGuard
+
+        guard = MemoryGuard()
+        if query_type == "playbook":
+            playbook = guard.load_playbook()
+            return json.dumps(playbook.to_dict(), indent=2)
+        else:
+            events = guard.read_events(limit=limit, event_type=event_type)
+            return json.dumps([e.to_dict() for e in events], indent=2)
+
+    @mcp.tool()
+    def trade_journal(date: Optional[str] = None, limit: int = 20) -> str:
+        """Read trade journal — structured position records with entry/exit reasoning.
+
+        Args:
+            date: Filter by date (YYYY-MM-DD). Default: all dates.
+            limit: Max entries to return (default 20)
+        """
+        from modules.journal_guard import JournalGuard
+
+        guard = JournalGuard()
+        entries = guard.read_entries(date=date, limit=limit)
+        return json.dumps([e.to_dict() for e in entries], indent=2)
+
+    @mcp.tool()
+    def judge_report() -> str:
+        """Get latest Judge evaluation — signal quality, false positive rates, recommendations."""
+        from modules.judge_guard import JudgeGuard
+
+        guard = JudgeGuard()
+        report = guard.read_latest_report()
+        if not report:
+            return json.dumps({"status": "no_reports", "message": "No judge reports yet. Run WOLF to generate."})
+        return json.dumps(report.to_dict(), indent=2)
+
+    @mcp.tool()
+    def obsidian_context() -> str:
+        """Read trading context from Obsidian vault — watchlists, market theses, risk preferences."""
+        from modules.obsidian_reader import ObsidianReader
+
+        reader = ObsidianReader()
+        if not reader.available:
+            return json.dumps({"status": "unavailable", "message": "Obsidian vault not found at ~/obsidian-vault"})
+        ctx = reader.read_trading_context()
+        return json.dumps(ctx.to_dict(), indent=2)
+
     return mcp

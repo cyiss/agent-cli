@@ -48,6 +48,14 @@ class WolfConfig:
     daily_reset_hour: int = 0             # UTC hour for daily PnL reset
     howl_report_hour: int = 4             # UTC hour for comprehensive HOWL report
 
+    # Nightly review
+    nightly_review_hour: int = 2          # UTC hour for nightly review
+    nightly_review_enabled: bool = True   # Enable/disable nightly review
+
+    # Obsidian integration
+    obsidian_vault_path: str = ""         # Path to Obsidian vault (empty = disabled)
+    obsidian_scan_interval_ticks: int = 60  # Re-scan vault every hour
+
     # Instrument filters
     excluded_instruments: List[str] = field(default_factory=list)
 
