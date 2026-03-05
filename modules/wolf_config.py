@@ -39,6 +39,15 @@ class WolfConfig:
     scanner_interval_ticks: int = 15
     watchdog_interval_ticks: int = 5
 
+    # HOWL self-improvement
+    howl_interval_ticks: int = 240        # Run HOWL every 4 hours (at 60s ticks)
+    howl_min_round_trips: int = 5         # Min trades before applying adjustments
+    howl_auto_adjust: bool = True         # Auto-adjust params from HOWL findings
+
+    # Scheduled tasks (UTC hours)
+    daily_reset_hour: int = 0             # UTC hour for daily PnL reset
+    howl_report_hour: int = 4             # UTC hour for comprehensive HOWL report
+
     # Instrument filters
     excluded_instruments: List[str] = field(default_factory=list)
 

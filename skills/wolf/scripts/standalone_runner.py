@@ -1,26 +1,35 @@
 """WOLF standalone runner — multi-slot orchestrator tick loop.
 
-Composes scanner + movers + DSL into a single autonomous strategy.
+Composes scanner + movers + DSL + HOWL into a single autonomous strategy.
 Each tick: fetch prices → update ROEs → check DSL → run movers → evaluate.
+Periodic: HOWL performance review → auto-adjust config parameters.
+Scheduled: daily PnL reset, comprehensive HOWL reports.
 """
 from __future__ import annotations
 
 import skills._bootstrap  # noqa: F401 — auto-setup sys.path
 
 import logging
+import os
 import signal
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from modules.dsl_config import DSLConfig, PRESETS as DSL_PRESETS
 from modules.dsl_guard import DSLGuard
 from modules.dsl_state import DSLState, DSLStateStore
+from modules.howl_adapter import adapt, apply_adjustments
+from modules.howl_engine import HowlEngine, TradeRecord
+from modules.howl_reporter import HowlReporter
 from modules.movers_guard import MoversGuard
 from modules.scanner_guard import ScannerGuard
 from modules.wolf_config import WolfConfig
 from modules.wolf_engine import WolfAction, WolfEngine
 from modules.wolf_state import WolfSlot, WolfState, WolfStateStore
+from parent.store import JSONLStore
 
 log = logging.getLogger("wolf_runner")
 
@@ -65,6 +74,12 @@ class WolfRunner:
         # DSL guards per slot (created on entry, removed on exit)
         self.dsl_guards: Dict[int, DSLGuard] = {}
         self._restore_dsl_guards()
+
+        # Trade logging for HOWL
+        self.trade_log = JSONLStore(path=f"{data_dir}/trades.jsonl")
+
+        # Scheduled task tracking (UTC hour -> last executed date string)
+        self._last_scheduled: Dict[str, str] = {}
 
         self._running = False
 
@@ -135,6 +150,13 @@ class WolfRunner:
         # 5. Watchdog (every N ticks)
         if tick % self.config.watchdog_interval_ticks == 0:
             self._watchdog()
+
+        # 5b. HOWL self-improvement (every N ticks)
+        if tick % self.config.howl_interval_ticks == 0:
+            self._run_howl()
+
+        # 5c. Scheduled tasks (time-based)
+        self._check_scheduled_tasks(now_ms)
 
         # 6. Engine evaluation
         actions = self.engine.evaluate(
@@ -350,6 +372,12 @@ class WolfRunner:
                 self._create_dsl_guard(slot)
 
                 self.state.total_trades += 1
+                self._log_trade(
+                    tick=self.state.tick_count, instrument=action.instrument,
+                    side=side, price=float(fill.price),
+                    quantity=float(fill.quantity), fee=float(getattr(fill, "fee", 0)),
+                    meta=f"entry:{action.source}",
+                )
                 log.info("ENTERED slot %d: %s %s @ %.4f size=%.4f (%s)",
                          slot.slot_id, action.direction, action.instrument,
                          float(fill.price), float(fill.quantity), action.reason)
@@ -393,6 +421,12 @@ class WolfRunner:
                     pnl = (slot.entry_price - exit_price) / slot.entry_price * slot.margin_allocated * self.config.leverage
 
             self._close_slot(slot, reason=action.reason, pnl=pnl)
+            self._log_trade(
+                tick=self.state.tick_count, instrument=action.instrument,
+                side=side, price=float(exit_price),
+                quantity=slot.entry_size, fee=float(getattr(fill, "fee", 0)) if fill else 0,
+                meta=action.reason,
+            )
             log.info("EXITED slot %d: %s %s @ %.4f PnL=$%.2f (%s)",
                      slot.slot_id, slot.direction, action.instrument,
                      exit_price, pnl, action.reason)
@@ -447,6 +481,82 @@ class WolfRunner:
         dsl_store = DSLStateStore(data_dir=f"{self.data_dir}/dsl")
         guard = DSLGuard(config=dsl_config, state=dsl_state, store=dsl_store)
         self.dsl_guards[slot.slot_id] = guard
+
+    def _log_trade(self, tick: int, instrument: str, side: str,
+                   price: float, quantity: float, fee: float = 0,
+                   meta: str = "") -> None:
+        """Append a trade record to the JSONL log."""
+        self.trade_log.append({
+            "tick": tick,
+            "oid": f"wolf-{tick}-{instrument}",
+            "instrument": instrument,
+            "side": side,
+            "price": str(price),
+            "quantity": str(quantity),
+            "timestamp_ms": int(time.time() * 1000),
+            "fee": str(fee),
+            "strategy": "wolf",
+            "meta": meta,
+        })
+
+    def _run_howl(self) -> None:
+        """Run HOWL performance review and optionally auto-adjust config."""
+        try:
+            raw_trades = self.trade_log.read_all()
+            if not raw_trades:
+                log.info("HOWL: no trades logged yet, skipping")
+                return
+
+            trades = [TradeRecord.from_dict(t) for t in raw_trades]
+            metrics = HowlEngine().compute(trades)
+
+            # Log distilled summary
+            summary = HowlReporter().distill(metrics)
+            log.info(summary)
+
+            # Save report
+            howl_dir = Path(self.data_dir) / "howl"
+            howl_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M")
+            report = HowlReporter().generate(metrics, date=ts)
+            (howl_dir / f"{ts}.md").write_text(report)
+
+            # Auto-adjust if enabled and enough data
+            if (self.config.howl_auto_adjust
+                    and metrics.total_round_trips >= self.config.howl_min_round_trips):
+                adjustments, adj_log = adapt(metrics, self.config)
+                if adjustments:
+                    apply_adjustments(adjustments, self.config)
+                    log.info(adj_log)
+                    # Re-sync engine with updated config
+                    self.engine = WolfEngine(self.config)
+                else:
+                    log.info("HOWL: no adjustments needed")
+
+        except Exception as e:
+            log.warning("HOWL review failed: %s", e)
+
+    def _check_scheduled_tasks(self, now_ms: int) -> None:
+        """Run time-based scheduled tasks (daily reset, HOWL reports)."""
+        now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        current_hour = now.hour
+
+        # Daily PnL reset
+        if (current_hour == self.config.daily_reset_hour
+                and self._last_scheduled.get("daily_reset") != today):
+            self._last_scheduled["daily_reset"] = today
+            old_pnl = self.state.daily_pnl
+            self.state.daily_pnl = 0.0
+            self.state.daily_loss_triggered = False
+            log.info("Daily PnL reset (was $%.2f)", old_pnl)
+
+        # Scheduled HOWL comprehensive report
+        if (current_hour == self.config.howl_report_hour
+                and self._last_scheduled.get("howl_report") != today):
+            self._last_scheduled["howl_report"] = today
+            log.info("Scheduled HOWL report (UTC %02d:00)", current_hour)
+            self._run_howl()
 
     def _print_status(self) -> None:
         """Print current WOLF status."""

@@ -1,0 +1,21 @@
+# Engine MM on yex:BTCSWP — BTC interest rate swap yield perp
+strategy: engine_mm
+instrument: BTCSWP-USDYP
+tick_interval: 10.0
+dry_run: false
+max_ticks: 0
+data_dir: data/yex-btcswp
+log_level: INFO
+
+# Strategy params
+strategy_params:
+  base_size: 0.5
+  num_levels: 3
+
+# Risk limits (conservative — new market)
+max_position_qty: 5.0
+max_notional_usd: 10000.0
+max_order_size: 1.0
+max_daily_drawdown_pct: 3.0
+max_leverage: 2.0
+tvl: 20000.0

@@ -86,6 +86,10 @@ YEX_MARKETS: Dict[str, Dict[str, str]] = {
         "hl_coin": "yex:US3M",
         "description": "US 3-month Treasury rate yield perpetual",
     },
+    "BTCSWP-USDYP": {
+        "hl_coin": "yex:BTCSWP",
+        "description": "BTC interest rate swap yield perpetual — tracks the BTC-denominated swap curve",
+    },
 }
 
 

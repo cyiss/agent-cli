@@ -28,4 +28,4 @@ tvl: 10000.0
 # Anomaly protection
 protection:
   enabled: true
-  config_path: /Users/jae_lee/anomaly-protection/configs/protection_vxx.yaml
+  config_path: configs/protection_vxx.yaml

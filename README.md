@@ -77,6 +77,79 @@ hl wolf run --mainnet
 
 ---
 
+## Strategies
+
+14 built-in strategies across four categories. Every strategy extends `BaseStrategy` with a single `on_tick()` method — no shared state, no hidden coupling between strategies.
+
+### Market Making
+
+Provide two-sided liquidity and earn the spread. These strategies quote bids and asks around a fair value estimate, managing inventory risk through skew and sizing adjustments.
+
+| Strategy | Description | Key Parameters | When to Use |
+|----------|-------------|----------------|-------------|
+| `engine_mm` | Production quoting engine — composite 4-signal fair value, dynamic spreads (fee + vol + toxicity + event), inventory skew, multi-level quote ladder. Auto-halts on oracle staleness. | `base_size`, `num_levels` | Primary MM strategy. Handles all market conditions including volatile regimes and stale data. |
+| `avellaneda_mm` | Avellaneda-Stoikov optimal market maker. Reservation price adjusts with inventory; optimal spread from risk aversion `gamma` and order flow intensity `k`. Vol-bin classifier + drawdown amplifier. | `gamma`, `k`, `base_size` | When you want theoretically grounded inventory-aware quoting with well-understood parameters. |
+| `regime_mm` | Vol-regime adaptive — classifies market into 4 volatility regimes (quiet/normal/volatile/extreme), switches spread width, sizing, and aggressiveness per regime. | `base_size` | Volatile markets where a single spread width doesn't work. Auto-adapts without manual tuning. |
+| `simple_mm` | Symmetric bid/ask quoting at fixed spread around mid. No inventory adjustment. | `spread_bps`, `size` | Testnet validation, baseline benchmarking, or low-vol stable pairs. |
+| `grid_mm` | Fixed-interval grid levels above and below mid. Places N orders at equal spacing. | `grid_spacing_bps`, `num_levels`, `size_per_level` | Range-bound markets where you want to accumulate and distribute across a price band. |
+| `liquidation_mm` | Provides liquidity during cascade/liquidation events. Detects OI drops and widens spreads to capture forced-seller flow. | `oi_drop_threshold_pct`, `cascade_spread_mult` | Liquidation-heavy markets. Only active during cascade conditions — sits idle otherwise. |
+
+### Arbitrage
+
+Exploit pricing dislocations across venues, instruments, or time horizons.
+
+| Strategy | Description | Key Parameters | When to Use |
+|----------|-------------|----------------|-------------|
+| `funding_arb` | Cross-venue funding rate arbitrage — captures funding divergence between HL and external venues. Quoting-engine powered with bias from funding delta. | `divergence_threshold_bps`, `max_bias_bps` | When funding rates diverge between venues. Works well on high-funding instruments. |
+| `basis_arb` | Trades implied basis from funding rate — enters when annualized basis (contango/backwardation) exceeds threshold. | `basis_threshold_bps`, `size` | Capturing contango/backwardation dislocations. Pairs well with funding_arb. |
+
+### Signal / Directional
+
+Enter positions based on technical signals or momentum indicators.
+
+| Strategy | Description | Key Parameters | When to Use |
+|----------|-------------|----------------|-------------|
+| `momentum_breakout` | Enters on volume + price breakout above/below N-period range. Requires both price and volume confirmation. | `lookback`, `breakout_threshold_bps`, `size` | Trending markets with clear breakout patterns. |
+| `mean_reversion` | Trades when price deviates from SMA beyond a threshold. | `window`, `threshold_bps`, `size` | Range-bound markets with predictable mean-reversion behavior. |
+| `aggressive_taker` | Crosses the spread with directional bias. Sinusoidal amplitude modulation. | `size`, `bias_amplitude` | When you have strong directional conviction and want immediate fills. |
+
+### Infrastructure / Risk
+
+Supporting strategies for portfolio management, block liquidity, and autonomous decision-making.
+
+| Strategy | Description | Key Parameters | When to Use |
+|----------|-------------|----------------|-------------|
+| `hedge_agent` | Reduces excess exposure per deterministic mandate. Fires when net notional exceeds threshold. | `notional_threshold` | Always-on risk overlay. Pairs with any MM or signal strategy. |
+| `rfq_agent` | Block-size dark RFQ liquidity — quotes for large orders with wider spreads. | `min_size`, `spread_bps` | Institutional/block flow. Provides hidden liquidity for large counterparties. |
+| `claude_agent` | Multi-model LLM trading agent. Sends market snapshot to an LLM (Gemini, Claude, or OpenAI), receives structured trade decisions. | `model`, `base_size` | Experimental/research. Autonomous decision-making using LLM reasoning. |
+
+### Quoting Engine Pipeline
+
+The engine-powered strategies (`engine_mm`, `funding_arb`, `regime_mm`, `liquidation_mm`) share a common pipeline:
+
+```
+Market Data -> Composite Fair Value -> Dynamic Spread -> Inventory Skew -> Multi-Level Ladder -> Orders
+               (4-signal blend)       (fee+vol+tox)     (price+size)     (exponential decay)
+```
+
+### LLM Agent (Multi-Model)
+
+| Provider | Models | Env Variable |
+|----------|--------|-------------|
+| Google Gemini | `gemini-2.0-flash` (default), `gemini-2.5-pro` | `GEMINI_API_KEY` |
+| Anthropic Claude | `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
+| OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3-mini` | `OPENAI_API_KEY` |
+
+---
+
+## TEE Clearing House
+
+This CLI implements the **agent side** of the [Nunchi TEE clearing architecture](https://docs.nunchi.trade). Agents connect to a House Enclave — a TEE-secured clearing venue — and compete via commit-reveal protocol with ECIES encryption and KKT optimality certificates.
+
+Access to the clearing house is currently invite-only. See [docs.nunchi.trade](https://docs.nunchi.trade) for the full clearing protocol specification, or reach out on [Discord](https://discord.gg/nunchi) to request access.
+
+---
+
 ## Skills
 
 Built on the open [Agent Skills](https://agentskills.io) standard. Each skill is self-contained with instructions, scripts, and references.
@@ -117,46 +190,6 @@ cd ~/agent-cli && pip install -e .
 mkdir -p ~/.claude/skills/yex-trader
 cp ~/agent-cli/cli/skill.md ~/.claude/skills/yex-trader/SKILL.md
 ```
-
----
-
-## Strategies
-
-14 built-in strategies across market making, momentum, arbitrage, and LLM-powered trading.
-
-| Strategy | Type | Description |
-|----------|------|-------------|
-| `engine_mm` | Market Making | Production quoting engine — composite FV, dynamic spreads, multi-level ladder |
-| `avellaneda_mm` | Market Making | Inventory-aware Avellaneda-Stoikov model |
-| `regime_mm` | Market Making | Vol-regime adaptive — switches behavior across 4 volatility regimes |
-| `simple_mm` | Market Making | Symmetric bid/ask quoting around mid |
-| `grid_mm` | Market Making | Fixed-interval grid levels above and below mid |
-| `liquidation_mm` | Market Making | Provides liquidity during cascade/liquidation events |
-| `funding_arb` | Arbitrage | Cross-venue funding rate arbitrage |
-| `basis_arb` | Arbitrage | Trades implied basis from funding rate (contango/backwardation) |
-| `momentum_breakout` | Signal | Enters on volume + price breakout above/below N-period range |
-| `mean_reversion` | Signal | Trades when price deviates from SMA |
-| `aggressive_taker` | Directional | Crosses spread with directional bias |
-| `hedge_agent` | Risk | Reduces excess exposure per deterministic mandate |
-| `rfq_agent` | Liquidity | Block-size dark RFQ flow |
-| `claude_agent` | LLM | Multi-model autonomous agent (Claude / Gemini / OpenAI) |
-
-### Quoting Engine
-
-The engine-powered strategies (`engine_mm`, `funding_arb`, `regime_mm`, `liquidation_mm`) share a common pipeline:
-
-```
-Market Data → Composite Fair Value → Dynamic Spread → Inventory Skew → Multi-Level Ladder → Orders
-              (4-signal blend)       (fee+vol+tox)     (price+size)     (exponential decay)
-```
-
-### LLM Agent (Multi-Model)
-
-| Provider | Models | Env Variable |
-|----------|--------|-------------|
-| Google Gemini | `gemini-2.0-flash` (default), `gemini-2.5-pro` | `GEMINI_API_KEY` |
-| Anthropic Claude | `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
-| OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3-mini` | `OPENAI_API_KEY` |
 
 ---
 
@@ -295,6 +328,25 @@ hl howl history -n 10
 
 **[Download SKILL.md](skills/howl/SKILL.md)**
 
+### HOWL Self-Improvement Loop
+
+When running inside WOLF, HOWL executes automatically every 240 ticks (~4 hours) and at a configurable UTC hour (default 04:00). It reads the trade log, computes performance metrics, and **auto-adjusts WOLF parameters** based on findings:
+
+| Finding | Automatic Adjustment |
+|---------|---------------------|
+| FDR > 30% (fees eating profits) | Raise scanner threshold, disable immediate mover entries |
+| Win rate < 40% | Tighten both scanner and movers confidence thresholds |
+| 5+ consecutive losses | Reduce daily loss limit by 20% |
+| Direction imbalance (e.g. longs losing) | Limit same-direction slots |
+| Fees exceed gross PnL | **Emergency mode**: disable auto-entries, raise all thresholds |
+| Profitable + healthy | Slightly relax thresholds toward defaults |
+
+All adjustments have guardrail bounds — parameters can't swing wildly. Disable with `howl_auto_adjust: false` in WOLF config.
+
+**Scheduled tasks** (built into WOLF tick loop):
+- **Daily PnL reset** at UTC midnight — clears daily loss tracking
+- **HOWL comprehensive report** at UTC 04:00 — full performance review with markdown report saved to `data/wolf/howl/`
+
 ---
 
 ## Commands
@@ -343,7 +395,11 @@ Fast tools (strategies, builder, wallet, setup) call Python directly — zero su
 
 ## Deploy on Railway
 
-One-click deploy to run WOLF autonomously in the cloud. No local setup required.
+Two deployment options: **headless** (WOLF runs strategies directly) or **OpenClaw agent** (conversational AI trading assistant with Telegram).
+
+### Option A: Headless WOLF (Deterministic)
+
+One-click deploy to run WOLF autonomously. No AI model needed — pure deterministic strategy execution.
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/Nunchi-trade/agent-cli&envs=HL_PRIVATE_KEY,HL_TESTNET,RUN_MODE,WOLF_PRESET&HL_TESTNETDefault=true&RUN_MODEDefault=wolf&WOLF_PRESETDefault=default)
 
@@ -353,16 +409,43 @@ One-click deploy to run WOLF autonomously in the cloud. No local setup required.
 | `HL_TESTNET` | No | `true` | `true` for testnet, `false` for mainnet |
 | `RUN_MODE` | No | `wolf` | `wolf`, `strategy`, or `mcp` |
 | `WOLF_PRESET` | No | `default` | `conservative`, `default`, or `aggressive` |
-| `WOLF_BUDGET` | No | — | Override budget in USD |
-| `STRATEGY` | No | — | Strategy name (if RUN_MODE=strategy) |
-| `INSTRUMENT` | No | `ETH-PERP` | Trading instrument |
 
 **Run modes:**
-- **wolf** (default) — WOLF multi-slot orchestrator with autonomous entry, exit, and DSL trailing stops
-- **strategy** — Single strategy (set `STRATEGY=engine_mm`, `avellaneda_mm`, etc.)
+- **wolf** (default) — WOLF multi-slot orchestrator with autonomous entry, exit, DSL trailing stops, and HOWL self-improvement loop
+- **strategy** — Single strategy loop (set `STRATEGY=engine_mm`, `avellaneda_mm`, etc.)
 - **mcp** — MCP server for AI agent integration (SSE transport)
 
-Persistent volume at `/data` stores WOLF state, HOWL reports, and scanner history across redeploys. Health check at `/health`, live status at `/status`.
+### Option B: OpenClaw Agent (Conversational AI)
+
+One-click deploy of a full OpenClaw agent that uses our CLI as the tool backend. Talk to your trading bot via Telegram — it scans markets, enters trades, manages risk, and learns from its mistakes.
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/Nunchi-trade/agent-cli/tree/main/deploy/openclaw-railway&envs=HL_PRIVATE_KEY,AI_PROVIDER,AI_API_KEY,TELEGRAM_BOT_TOKEN,TELEGRAM_USERNAME,HL_TESTNET&HL_TESTNETDefault=true)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `HL_PRIVATE_KEY` | Yes | — | Your Hyperliquid private key |
+| `AI_PROVIDER` | Yes | — | `anthropic`, `openai`, `gemini`, or `openrouter` |
+| `AI_API_KEY` | Yes | — | API key for the chosen AI provider |
+| `TELEGRAM_BOT_TOKEN` | Yes | — | Telegram bot token (from @BotFather) |
+| `TELEGRAM_USERNAME` | Yes | — | Your Telegram @username |
+| `HL_TESTNET` | No | `true` | `true` for testnet, `false` for mainnet |
+
+**What you get:**
+- OpenClaw gateway with web UI at `/openclaw`
+- Telegram integration — chat with your bot to start/stop trading, run scans, check status
+- Our 13 MCP trading tools as the agent's primary capabilities
+- Persistent state across redeploys via `/data` volume
+- Auto-onboard: bot sends "Agent ready" to Telegram on first deploy
+- HOWL self-improvement: the agent analyzes its own trades and adjusts strategy parameters
+
+**How it works:**
+1. Deploy sets up OpenClaw + our `hl mcp serve` as the tool provider
+2. Bot auto-configures Telegram and sends you a ready message
+3. Tell it "start trading" → it runs WOLF with autonomous entry, exit, and risk management
+4. Ask "how did we do?" → it runs HOWL and reports performance metrics
+5. The agent reads workspace files (AGENTS.md, SOUL.md) that define its trading behavior
+
+Both options persist state via Railway volume at `/data` — WOLF state, HOWL reports, scanner history, and agent memory survive redeploys.
 
 ---
 
@@ -374,10 +457,12 @@ Persistent volume at `/data` stores WOLF state, HOWL reports, and scanner histor
 |------------|---------|-------------|
 | VXX-USDYP | yex:VXX | Volatility index yield perp |
 | US3M-USDYP | yex:US3M | US 3M Treasury rate yield perp |
+| BTCSWP-USDYP | yex:BTCSWP | BTC interest rate swap yield perp — tracks the BTC-denominated swap curve |
 
 ```bash
 hl run avellaneda_mm -i VXX-USDYP --tick 15
 hl run funding_arb -i US3M-USDYP --tick 30
+hl run engine_mm -i BTCSWP-USDYP --tick 10
 ```
 
 ---
@@ -386,11 +471,12 @@ hl run funding_arb -i US3M-USDYP --tick 30
 
 ```
 cli/           CLI commands and trading engine
-  commands/    Subcommand modules (run, wolf, scanner, movers, dsl, howl, ...)
+  commands/    Subcommand modules (run, wolf, scanner, movers, dsl, howl, house, ...)
   mcp_server.py  MCP server (13 tools via FastMCP)
   hl_adapter.py  Direct HL API adapter (live + mock)
   builder_fee.py Builder fee config (HL native BuilderInfo)
   keystore.py    Encrypted keystore (geth-compatible)
+  strategy_registry.py  Strategy + YEX market definitions
 strategies/    14 trading strategy implementations
 modules/       Pure logic modules (zero I/O)
   wolf_engine.py     WOLF decision engine
@@ -406,6 +492,8 @@ skills/        Agent Skills (SKILL.md + runners)
   dsl/         Dynamic stop loss
   howl/        Performance review
 sdk/           Strategy base class and model registry
+agent/         TEE clearing agent client (ECIES, commit-reveal)
+clearing/      TEE clearing protocol types and crypto
 parent/        HL API proxy, position tracking, risk management
 tests/         Test suite (263 tests)
 ```
@@ -473,19 +561,6 @@ hl run my_strategies.my_strategy:MyStrategy -i ETH-PERP --tick 10
 pip install -e ".[dev]"
 pytest tests/ -v                  # 263 tests
 ```
-
----
-
-## TEE Clearing House
-
-This CLI implements the **agent side** of the [Nunchi TEE clearing architecture](https://docs.nunchi.trade). Agents connect to a House Enclave — a TEE-secured clearing venue — and compete via commit-reveal protocol with ECIES encryption and KKT optimality certificates.
-
-```bash
-hl house join avellaneda_mm --url http://house:8080
-hl house status --url http://house:8080
-```
-
-See [docs.nunchi.trade](https://docs.nunchi.trade) for the full clearing protocol specification.
 
 ---
 
