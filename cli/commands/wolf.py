@@ -17,6 +17,7 @@ def wolf_run(
     preset: Optional[str] = typer.Option(None, "--preset", "-p"),
     config: Optional[Path] = typer.Option(None, "--config", "-c"),
     mock: bool = typer.Option(False, "--mock"),
+    resume: bool = typer.Option(True, "--resume/--fresh", help="Resume from saved state or start fresh"),
     mainnet: bool = typer.Option(False, "--mainnet"),
     json_output: bool = typer.Option(False, "--json"),
     max_ticks: int = typer.Option(0, "--max-ticks"),
@@ -27,8 +28,9 @@ def wolf_run(
 ):
     """Start WOLF autonomous multi-slot strategy."""
     _run_wolf(tick=tick, preset=preset, config=config, mock=mock,
-              mainnet=mainnet, json_output=json_output, max_ticks=max_ticks,
-              budget=budget, slots=slots, leverage=leverage, data_dir=data_dir)
+              resume=resume, mainnet=mainnet, json_output=json_output,
+              max_ticks=max_ticks, budget=budget, slots=slots,
+              leverage=leverage, data_dir=data_dir)
 
 
 @wolf_app.command("once")
@@ -100,7 +102,8 @@ def wolf_presets():
 
 
 def _run_wolf(tick, preset, config, mock, mainnet, json_output,
-              max_ticks, budget, slots, leverage, data_dir, single=False):
+              max_ticks, budget, slots, leverage, data_dir, single=False,
+              resume=True):
     project_root = str(Path(__file__).resolve().parent.parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -161,7 +164,7 @@ def _run_wolf(tick, preset, config, mock, mainnet, json_output,
 
     runner = WolfRunner(hl=hl, config=cfg, tick_interval=tick,
                         json_output=json_output, data_dir=data_dir,
-                        builder=_builder_info)
+                        builder=_builder_info, resume=resume)
 
     if single:
         runner.run_once()

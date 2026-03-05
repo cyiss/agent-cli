@@ -12,7 +12,7 @@ compatibility: >-
   Hyperliquid perp positions. Direct HL API — no mcporter needed.
 metadata:
   author: Nunchi Trade
-  version: "1.0"
+  version: "1.0.0"
   platform: yex-trader
   exchange: hyperliquid
   category: risk-management

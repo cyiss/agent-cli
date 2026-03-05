@@ -1,5 +1,5 @@
 ---
-name: Agent Onboarding
+name: agent-onboarding
 version: 1.0.0
 description: First-time setup — from zero to first trade on Hyperliquid
 author: YEX
@@ -51,7 +51,7 @@ hl setup check
 **If fails:**
 | Error | Fix |
 |-------|-----|
-| `python3 not found` | Install Python 3.9+ via `brew install python` or system package manager |
+| `python3 not found` | Install Python 3.10+ via `brew install python` or system package manager |
 | `pip install failed` | Ensure you're in a venv: `source .venv/bin/activate` |
 | `ModuleNotFoundError: hyperliquid` | Run `pip install hyperliquid-python-sdk` |
 
@@ -184,7 +184,7 @@ hl builder status
 Run a strategy in mock mode to verify the full pipeline without real orders.
 
 ```bash
-hl run avellaneda_mm --mock --max-ticks 3
+hl run avellaneda_mm --mock --fresh --max-ticks 3
 ```
 
 **Expected:** 3 ticks execute, strategy produces decisions, no errors.
@@ -219,7 +219,7 @@ hl status
 After single-strategy validation, try the full WOLF orchestrator.
 
 ```bash
-hl wolf run --mock --max-ticks 5
+hl wolf run --mock --fresh --max-ticks 5
 ```
 
 Then live:

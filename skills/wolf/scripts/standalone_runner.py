@@ -51,6 +51,7 @@ class WolfRunner:
         json_output: bool = False,
         data_dir: str = "data/wolf",
         builder: Optional[dict] = None,
+        resume: bool = True,
     ):
         self.hl = hl
         self.config = config or WolfConfig()
@@ -64,7 +65,10 @@ class WolfRunner:
 
         # State + persistence
         self.state_store = WolfStateStore(path=f"{data_dir}/state.json")
-        self.state = self.state_store.load() or WolfState.new(self.config.max_slots)
+        if resume:
+            self.state = self.state_store.load() or WolfState.new(self.config.max_slots)
+        else:
+            self.state = WolfState.new(self.config.max_slots)
 
         # Sub-guards
         self.movers_guard = MoversGuard()

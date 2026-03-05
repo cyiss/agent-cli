@@ -14,6 +14,7 @@ import sys
 import time
 from functools import partial
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from threading import Thread
 
 START_TIME = time.time()
@@ -32,10 +33,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                 "pid": CHILD_PROC.pid if CHILD_PROC else None,
                 "alive": CHILD_PROC.poll() is None if CHILD_PROC else False,
             })
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.write(body)
+            self._json_response(body)
+
         elif self.path == "/status":
             try:
                 result = subprocess.run(
@@ -49,12 +48,72 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.write(output)
+
+        elif self.path == "/api/status":
+            data_dir = os.environ.get("DATA_DIR", "/data")
+            try:
+                from cli.api.status_reader import read_status
+                body = json.dumps(read_status(data_dir))
+            except Exception as e:
+                body = json.dumps({"status": "error", "error": str(e)})
+            self._cors_headers()
+            self._json_response(body)
+
+        elif self.path == "/api/strategies":
+            try:
+                from cli.api.status_reader import read_strategies
+                body = json.dumps(read_strategies())
+            except Exception as e:
+                body = json.dumps({"error": str(e)})
+            self._cors_headers()
+            self._json_response(body)
+
+        elif self.path == "/api/feed":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self._cors_headers(headers_only=True)
+            self.end_headers()
+            data_dir = os.environ.get("DATA_DIR", "/data")
+            try:
+                from cli.api.status_reader import read_status
+                last_tick = -1
+                while True:
+                    status = read_status(data_dir)
+                    tick = status.get("tick_count", 0)
+                    if tick != last_tick:
+                        last_tick = tick
+                        self.wfile.write(f"data: {json.dumps(status)}\n\n".encode())
+                        self.wfile.flush()
+                    time.sleep(2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         else:
             self.send_response(404)
             self.end_headers()
 
+    def do_OPTIONS(self):
+        """Handle CORS preflight."""
+        self.send_response(204)
+        self._cors_headers()
+        self.end_headers()
+
     def write(self, body: str):
         self.wfile.write(body.encode())
+
+    def _json_response(self, body: str):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.write(body)
+
+    def _cors_headers(self, headers_only: bool = False):
+        origin = os.environ.get("CORS_ORIGIN", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def log_message(self, format, *args):
         pass  # suppress access logs
@@ -134,7 +193,11 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
 
     # Auto-approve builder fee (idempotent, best-effort)
-    if os.environ.get("HL_PRIVATE_KEY"):
+    # Check both HL_PRIVATE_KEY (direct) and keystore auth paths
+    has_key = bool(os.environ.get("HL_PRIVATE_KEY"))
+    has_keystore = bool(os.environ.get("HL_KEYSTORE_PASSWORD")) or Path(
+        os.path.expanduser("~/.hl-agent/env")).exists()
+    if has_key or has_keystore:
         try:
             mainnet_flag = ["--mainnet"] if os.environ.get("HL_TESTNET", "true").lower() == "false" else []
             subprocess.run(

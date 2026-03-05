@@ -1,5 +1,5 @@
 ---
-name: WOLF Strategy
+name: wolf-strategy
 version: 1.0.0
 description: Autonomous multi-slot trading orchestrator
 author: YEX

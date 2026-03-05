@@ -110,6 +110,10 @@ def wallet_auto(
 
     ks_path = create_keystore(account.key.hex(), password)
 
+    # Auto-save when --json is used (agent path), or when --save-env is explicit
+    if json_output:
+        save_env = True
+
     # Optionally persist to ~/.hl-agent/env
     if save_env:
         env_path = Path.home() / ".hl-agent" / "env"

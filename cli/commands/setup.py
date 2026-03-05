@@ -35,7 +35,12 @@ def setup_check():
         ok_items.append("HL_PRIVATE_KEY set")
     elif has_keystore:
         ok_items.append(f"Keystore found ({len(list_keystores())} keys)")
-        if not os.environ.get("HL_KEYSTORE_PASSWORD"):
+        from cli.keystore import _load_env_password
+        if os.environ.get("HL_KEYSTORE_PASSWORD"):
+            ok_items.append("HL_KEYSTORE_PASSWORD set via environment")
+        elif _load_env_password():
+            ok_items.append("HL_KEYSTORE_PASSWORD found in ~/.hl-agent/env")
+        else:
             issues.append("HL_KEYSTORE_PASSWORD not set (needed for auto-unlock)")
     else:
         issues.append("No private key: set HL_PRIVATE_KEY or run 'hl wallet import'")
@@ -90,8 +95,8 @@ def setup_bootstrap():
     project_root = Path(__file__).resolve().parent.parent.parent
 
     # 1. Python version check
-    if sys.version_info < (3, 9):
-        typer.echo(f"ERROR: Python 3.9+ required (found {sys.version_info.major}.{sys.version_info.minor})")
+    if sys.version_info < (3, 10):
+        typer.echo(f"ERROR: Python 3.10+ required (found {sys.version_info.major}.{sys.version_info.minor})")
         raise typer.Exit(1)
     typer.echo(f"OK  Python {sys.version_info.major}.{sys.version_info.minor}")
 

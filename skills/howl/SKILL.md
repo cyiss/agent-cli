@@ -1,5 +1,5 @@
 ---
-name: HOWL Performance Review
+name: howl-performance-review
 version: 1.0.0
 description: Hunt, Optimize, Win, Learn — nightly automated performance review
 author: Nunchi Trade
