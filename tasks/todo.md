@@ -44,13 +44,12 @@ The IOC bug makes all 6 MM strategies unprofitable by design. Nothing else matte
 
 ---
 
-## Phase 2: High — Order Execution Reliability
+## Phase 2: High — Order Execution Reliability ✅
 
 ### 2.1 Order size precision (`szDecimals`)
-- [ ] **File:** `parent/hl_proxy.py` or new `cli/instrument_meta.py`
-- [ ] On init, query `metaAndAssetCtxs` from HL API to get `szDecimals` per instrument
-- [ ] Cache the metadata (refresh on startup, stale after 24h)
-- [ ] Round order sizes to `szDecimals` before submission
+- [x] Added `_get_sz_decimals()` to DirectHLProxy with lazy caching
+- [x] `place_order()` now rounds size to instrument-specific decimals
+- [x] WOLF runner delegates rounding to adapter
 - [ ] Affects: all strategies via WOLF and direct `hl trade`
 
 ### 2.2 API rate limiting — backoff + batching for movers scan
