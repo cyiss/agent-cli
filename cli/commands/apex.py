@@ -138,6 +138,26 @@ def apex_reconcile(
         typer.echo(f"\nRun with --fix to auto-resolve.")
 
 
+@apex_app.command("archive")
+def apex_archive(
+    days: int = typer.Option(0, "--days", help="Archive state closed more than N days ago (0=all closed)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be archived"),
+    data_dir: str = typer.Option("data/apex", "--data-dir"),
+):
+    """Archive closed position state files."""
+    project_root = str(Path(__file__).resolve().parent.parent.parent)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from modules.archiver import StateArchiver
+    archiver = StateArchiver(archive_dir=f"{data_dir}/archive")
+    counts = archiver.archive_old(guard_dir=f"{data_dir}/guard", days_old=days, dry_run=dry_run)
+
+    prefix = "[DRY RUN] " if dry_run else ""
+    typer.echo(f"{prefix}Archived: {counts.get('guard', 0)} guard state files")
+    typer.echo(f"{prefix}Skipped: {counts.get('skipped', 0)} (active or too recent)")
+
+
 @apex_app.command("presets")
 def apex_presets():
     """List available APEX presets."""
