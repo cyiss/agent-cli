@@ -83,6 +83,61 @@ def apex_status(data_dir: str = typer.Option("data/apex", "--data-dir")):
         typer.echo("\nNo active positions.")
 
 
+@apex_app.command("reconcile")
+def apex_reconcile(
+    fix: bool = typer.Option(False, "--fix", help="Auto-fix discrepancies (adopt orphans, correct sizes)"),
+    data_dir: str = typer.Option("data/apex", "--data-dir"),
+    mock: bool = typer.Option(False, "--mock"),
+    mainnet: bool = typer.Option(False, "--mainnet"),
+):
+    """Reconcile APEX state against exchange positions."""
+    project_root = str(Path(__file__).resolve().parent.parent.parent)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    from modules.apex_state import ApexStateStore
+    from modules.reconciliation import ReconciliationEngine
+
+    store = ApexStateStore(path=f"{data_dir}/state.json")
+    state = store.load()
+    if not state:
+        typer.echo("No APEX state found. Run 'hl apex run' first.")
+        raise typer.Exit()
+
+    if mock:
+        from cli.hl_adapter import DirectMockProxy
+        hl = DirectMockProxy()
+    else:
+        from cli.hl_adapter import DirectHLProxy
+        from cli.config import TradingConfig
+        from parent.hl_proxy import HLProxy
+        try:
+            private_key = TradingConfig().get_private_key()
+        except RuntimeError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
+        hl = DirectHLProxy(HLProxy(private_key=private_key, testnet=not mainnet))
+
+    account = hl.get_account_state()
+    positions = account.get("assetPositions", [])
+    slot_dicts = [s.to_dict() for s in state.slots]
+
+    engine = ReconciliationEngine()
+    discrepancies = engine.reconcile(slot_dicts, positions)
+
+    if not discrepancies:
+        typer.echo("All clear — no discrepancies found.")
+        return
+
+    typer.echo(f"Found {len(discrepancies)} discrepancy(ies):\n")
+    for d in discrepancies:
+        icon = "!!" if d.severity == "critical" else " >"
+        typer.echo(f"  {icon} [{d.type}] {d.detail}")
+
+    if not fix:
+        typer.echo(f"\nRun with --fix to auto-resolve.")
+
+
 @apex_app.command("presets")
 def apex_presets():
     """List available APEX presets."""

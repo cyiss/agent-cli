@@ -36,6 +36,7 @@ from modules.apex_config import ApexConfig
 from modules.apex_engine import ApexAction, ApexEngine
 from modules.apex_state import ApexSlot, ApexState, ApexStateStore
 from execution.portfolio_risk import PortfolioRiskManager, PortfolioRiskConfig
+from modules.reconciliation import ReconciliationEngine
 from parent.store import JSONLStore
 
 log = logging.getLogger("apex_runner")
@@ -85,6 +86,10 @@ class ApexRunner:
         # Guard bridges per slot (created on entry, removed on exit)
         self.guard_bridges: Dict[int, GuardBridge] = {}
         self._restore_guard_bridges()
+
+        # Reconciliation engine
+        self.recon_engine = ReconciliationEngine()
+        self._reconcile_on_startup()
 
         # Trade logging for REFLECT
         self.trade_log = JSONLStore(path=f"{data_dir}/trades.jsonl")
@@ -424,27 +429,115 @@ class ApexRunner:
             log.warning("Radar failed: %s", e)
             return []
 
-    def _watchdog(self) -> None:
-        """Health check — verify positions match exchange state."""
-        active = self.state.active_slots()
-        if not active:
-            return
-
+    def _reconcile_on_startup(self) -> None:
+        """Run reconciliation at startup to detect orphans from crashes."""
         try:
             account = self.hl.get_account_state()
             positions = account.get("assetPositions", [])
-            exchange_instruments = set()
-            for pos in positions:
-                p = pos.get("position", {})
-                if float(p.get("szi", "0")) != 0:
-                    coin = p.get("coin", "")
-                    exchange_instruments.add(f"{coin}-PERP")
+            slot_dicts = [s.to_dict() for s in self.state.slots]
+            discrepancies = self.recon_engine.reconcile(slot_dicts, positions)
 
-            for slot in active:
-                if slot.instrument not in exchange_instruments:
-                    log.warning("Watchdog: slot %d (%s) has no exchange position — marking closed",
-                                slot.slot_id, slot.instrument)
-                    self._close_slot(slot, reason="watchdog_no_position", pnl=0)
+            for d in discrepancies:
+                if d.type == "orphan_exchange":
+                    log.warning("STARTUP RECON: %s", d.detail)
+                    self._adopt_orphan(d)
+                elif d.type == "orphan_slot":
+                    log.warning("STARTUP RECON: %s", d.detail)
+                    slot = next((s for s in self.state.slots if s.slot_id == d.slot_id), None)
+                    if slot:
+                        self._close_slot(slot, reason="recon_orphan_slot", pnl=0)
+                elif d.type == "size_mismatch":
+                    log.warning("STARTUP RECON: %s", d.detail)
+                    slot = next((s for s in self.state.slots if s.slot_id == d.slot_id), None)
+                    if slot:
+                        slot.entry_size = d.exchange_size
+                        log.info("Corrected slot %d size to %.4f", d.slot_id, d.exchange_size)
+
+            if discrepancies:
+                self.state_store.save(self.state)
+                log.info("Startup reconciliation: %d discrepancies resolved", len(discrepancies))
+        except Exception as e:
+            log.warning("Startup reconciliation failed: %s", e)
+
+    def _adopt_orphan(self, discrepancy) -> None:
+        """Adopt an orphaned exchange position into an empty slot."""
+        empty = self.state.get_empty_slot()
+        if not empty:
+            log.error("ORPHAN NOT ADOPTED — no empty slot for %s (%.4f)",
+                      discrepancy.instrument, discrepancy.exchange_size)
+            return
+
+        # Determine direction from exchange
+        # We need to re-fetch or infer; the discrepancy has exchange_size (abs)
+        # but we need the signed szi. Fetch account again for this position.
+        try:
+            account = self.hl.get_account_state()
+            positions = account.get("assetPositions", [])
+            szi = 0.0
+            entry_px = 0.0
+            for pos in positions:
+                p = pos.get("position", pos)
+                coin = p.get("coin", "")
+                if f"{coin}-PERP" == discrepancy.instrument:
+                    szi = float(p.get("szi", "0"))
+                    entry_px = float(p.get("entryPx", "0"))
+                    break
+
+            direction = "long" if szi > 0 else "short"
+            size = abs(szi)
+
+            empty.status = "active"
+            empty.instrument = discrepancy.instrument
+            empty.direction = direction
+            empty.entry_size = size
+            empty.entry_price = entry_px
+            empty.entry_ts = int(time.time() * 1000)
+            empty.entry_source = "recon_adopted"
+            empty.current_price = entry_px
+
+            # Create a GUARD bridge for the adopted position
+            guard_cfg = GUARD_PRESETS.get(self.config.guard_preset, GUARD_PRESETS["tight"])
+            if self.config.guard_leverage_override:
+                guard_cfg = GuardConfig(
+                    **{**guard_cfg.__dict__, "leverage": self.config.guard_leverage_override}
+                )
+            guard = GuardBridge.create(
+                position_id=f"apex-slot-{empty.slot_id}",
+                entry_price=entry_px,
+                position_size=size,
+                direction=direction,
+                config=guard_cfg,
+                data_dir=f"{self.data_dir}/guard",
+            )
+            self.guard_bridges[empty.slot_id] = guard
+
+            log.info("ADOPTED orphan %s into slot %d: %s %.4f @ %.2f",
+                     discrepancy.instrument, empty.slot_id, direction, size, entry_px)
+        except Exception as e:
+            log.error("Failed to adopt orphan %s: %s", discrepancy.instrument, e)
+
+    def _watchdog(self) -> None:
+        """Health check — reconcile positions against exchange state."""
+        try:
+            account = self.hl.get_account_state()
+            positions = account.get("assetPositions", [])
+            slot_dicts = [s.to_dict() for s in self.state.slots]
+            discrepancies = self.recon_engine.reconcile(slot_dicts, positions)
+
+            for d in discrepancies:
+                if d.type == "orphan_slot":
+                    log.warning("Watchdog: %s", d.detail)
+                    slot = next((s for s in self.state.slots if s.slot_id == d.slot_id), None)
+                    if slot:
+                        self._close_slot(slot, reason="watchdog_no_position", pnl=0)
+                elif d.type == "orphan_exchange":
+                    log.warning("Watchdog: %s", d.detail)
+                    self._adopt_orphan(d)
+                elif d.type == "size_mismatch":
+                    log.warning("Watchdog: %s", d.detail)
+                    slot = next((s for s in self.state.slots if s.slot_id == d.slot_id), None)
+                    if slot:
+                        slot.entry_size = d.exchange_size
         except Exception as e:
             log.warning("Watchdog check failed: %s", e)
 
