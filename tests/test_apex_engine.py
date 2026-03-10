@@ -436,3 +436,127 @@ class TestConfigPresets:
     def test_margin_auto_computed(self):
         cfg = ApexConfig(total_budget=10_000, max_slots=5)
         assert cfg.margin_per_slot == pytest.approx(2000.0)
+
+
+class TestMinHoldTime:
+    """Phase 3d — min hold blocks conviction/stagnation but NOT safety exits."""
+
+    def test_min_hold_blocks_conviction_collapse(self):
+        """Conviction collapse exit should be blocked when under min hold."""
+        cfg = ApexConfig(conviction_collapse_minutes=30, min_hold_ms=2_700_000)
+        engine = ApexEngine(cfg)
+
+        now_ms = 100_000_000
+        # Entry was 20 min ago — still under 45 min hold
+        entry_ts = now_ms - 20 * 60_000
+        disappeared_ts = now_ms - 31 * 60_000  # signal gone 31 min
+
+        state = _make_state(slots=[
+            _active_slot(0, "ETH-PERP", current_roe=-2.0,
+                         entry_ts=entry_ts,
+                         signal_disappeared_ts=disappeared_ts),
+        ])
+
+        actions = engine.evaluate(state, [], [], {}, {}, now_ms=now_ms)
+        exits = [a for a in actions if a.action == "exit" and "conviction_collapse" in a.reason]
+        assert len(exits) == 0
+
+    def test_min_hold_does_not_block_guard_close(self):
+        """GUARD close must always fire, even under min hold."""
+        cfg = ApexConfig(min_hold_ms=2_700_000)
+        engine = ApexEngine(cfg)
+
+        now_ms = 100_000_000
+        entry_ts = now_ms - 10 * 60_000  # 10 min ago — under hold
+
+        state = _make_state(slots=[
+            _active_slot(0, "ETH-PERP", entry_ts=entry_ts),
+        ])
+        guard_results = {0: {"action": "close", "reason": "tier_breach"}}
+
+        actions = engine.evaluate(state, [], [], {}, guard_results, now_ms=now_ms)
+        exits = [a for a in actions if a.action == "exit" and "guard_close" in a.reason]
+        assert len(exits) == 1
+
+    def test_min_hold_does_not_block_daily_loss(self):
+        """Daily loss limit must always fire, even under min hold."""
+        cfg = ApexConfig(min_hold_ms=2_700_000, daily_loss_limit=500.0)
+        engine = ApexEngine(cfg)
+
+        now_ms = 100_000_000
+        entry_ts = now_ms - 10 * 60_000  # 10 min ago
+
+        state = _make_state(slots=[
+            _active_slot(0, "ETH-PERP", entry_ts=entry_ts),
+        ])
+        state.daily_pnl = -500.0
+
+        actions = engine.evaluate(state, [], [], {}, {}, now_ms=now_ms)
+        exits = [a for a in actions if a.action == "exit"]
+        assert len(exits) == 1
+        assert exits[0].reason == "daily_loss_limit"
+
+    def test_min_hold_allows_exit_after_expiry(self):
+        """After min hold expires, conviction collapse should fire normally."""
+        cfg = ApexConfig(conviction_collapse_minutes=30, min_hold_ms=2_700_000)
+        engine = ApexEngine(cfg)
+
+        now_ms = 100_000_000
+        # Entry was 50 min ago — past the 45 min hold
+        entry_ts = now_ms - 50 * 60_000
+        disappeared_ts = now_ms - 31 * 60_000
+
+        state = _make_state(slots=[
+            _active_slot(0, "ETH-PERP", current_roe=-2.0,
+                         entry_ts=entry_ts,
+                         signal_disappeared_ts=disappeared_ts),
+        ])
+
+        actions = engine.evaluate(state, [], [], {}, {}, now_ms=now_ms)
+        exits = [a for a in actions if a.action == "exit" and "conviction_collapse" in a.reason]
+        assert len(exits) == 1
+
+
+class TestSlotCooldown:
+    """Phase 3d — slot cooldown prevents immediate reuse after close."""
+
+    def test_cooldown_prevents_reuse_too_early(self):
+        """A slot closed 2 min ago should not be available (cooldown=5min)."""
+        cfg = ApexConfig(slot_cooldown_ms=300_000)
+        engine = ApexEngine(cfg)
+
+        now_ms = 100_000_000
+        state = _make_state(max_slots=1)
+        # Slot 0 is empty but was closed 2 min ago
+        state.slots[0].status = "empty"
+        state.slots[0].close_ts = now_ms - 2 * 60_000
+
+        movers = [{
+            "asset": "ETH", "signal_type": "IMMEDIATE_MOVER",
+            "direction": "LONG", "confidence": 100,
+        }]
+
+        actions = engine.evaluate(state, movers, [], {}, {}, now_ms=now_ms)
+        entries = [a for a in actions if a.action == "enter"]
+        assert len(entries) == 0
+
+    def test_cooldown_allows_reuse_after_expiry(self):
+        """A slot closed 6 min ago should be available (cooldown=5min)."""
+        cfg = ApexConfig(slot_cooldown_ms=300_000)
+        engine = ApexEngine(cfg)
+
+        now_ms = 100_000_000
+        state = _make_state(max_slots=1)
+        # Slot 0 is empty and was closed 6 min ago
+        state.slots[0].status = "empty"
+        state.slots[0].close_ts = now_ms - 6 * 60_000
+
+        movers = [{
+            "asset": "ETH", "signal_type": "IMMEDIATE_MOVER",
+            "direction": "LONG", "confidence": 100,
+        }]
+
+        actions = engine.evaluate(state, movers, [], {}, {}, now_ms=now_ms)
+        entries = [a for a in actions if a.action == "enter"]
+        assert len(entries) == 1
+        assert entries[0].instrument == "ETH-PERP"

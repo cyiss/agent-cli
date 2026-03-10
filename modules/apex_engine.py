@@ -122,6 +122,13 @@ class ApexEngine:
                 reason=f"hard_stop: ROE {slot.current_roe:.1f}%",
             )
 
+        # --- Min hold gate: block conviction collapse & stagnation exits ---
+        under_min_hold = (
+            cfg.min_hold_ms > 0
+            and slot.entry_ts > 0
+            and (now_ms - slot.entry_ts) < cfg.min_hold_ms
+        )
+
         # 3. Conviction collapse
         coin = slot.instrument.replace("-PERP", "")
         still_in_signals = any(
@@ -141,7 +148,7 @@ class ApexEngine:
 
             if slot.signal_disappeared_ts > 0 and slot.current_roe < 0:
                 elapsed_min = (now_ms - slot.signal_disappeared_ts) / 60_000
-                if elapsed_min >= cfg.conviction_collapse_minutes:
+                if elapsed_min >= cfg.conviction_collapse_minutes and not under_min_hold:
                     return ApexAction(
                         action="exit", slot_id=slot.slot_id,
                         instrument=slot.instrument, direction=slot.direction,
@@ -151,7 +158,7 @@ class ApexEngine:
         # 4. Stagnation
         if slot.current_roe >= cfg.stagnation_min_roe and slot.last_progress_ts > 0:
             stagnation_min = (now_ms - slot.last_progress_ts) / 60_000
-            if stagnation_min >= cfg.stagnation_minutes:
+            if stagnation_min >= cfg.stagnation_minutes and not under_min_hold:
                 return ApexAction(
                     action="exit", slot_id=slot.slot_id,
                     instrument=slot.instrument, direction=slot.direction,
@@ -243,7 +250,7 @@ class ApexEngine:
 
         # Fill available slots
         for cand in candidates:
-            slot = state.get_empty_slot()
+            slot = state.get_empty_slot(now_ms=now_ms, cooldown_ms=cfg.slot_cooldown_ms)
             if slot is None:
                 break
 

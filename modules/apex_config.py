@@ -26,9 +26,18 @@ class ApexConfig:
     stagnation_min_roe: float = 3.0
     max_negative_roe: float = -5.0
 
+    # Rotation cooldown
+    min_hold_ms: int = 2_700_000       # 45 min — blocks conviction/stagnation exits
+    slot_cooldown_ms: int = 300_000    # 5 min — prevents slot reuse after close
+
     # Risk
     daily_loss_limit: float = 500.0
     max_same_direction: int = 2
+
+    # Risk Guardian gate machine
+    cooldown_duration_ms: int = 1_800_000          # 30 min auto-expiry
+    cooldown_trigger_losses: int = 2               # consecutive losses to enter COOLDOWN
+    cooldown_drawdown_pct: float = 50.0            # % of daily loss limit → COOLDOWN
 
     # Guard preset for position guards
     guard_preset: str = "tight"
@@ -74,6 +83,9 @@ class ApexConfig:
     smart_money_min_position_usd: float = 10_000.0
     smart_money_conviction_threshold: int = 2
     smart_money_poll_interval_ticks: int = 5
+
+    # Order type optimization (ALO fee savings ~3 bps round-trip)
+    entry_order_type: str = "Alo"  # "Alo" (maker rebate), "Gtc", or "Ioc"
 
     # Instrument filters
     excluded_instruments: List[str] = field(default_factory=list)

@@ -64,9 +64,13 @@ class ApexState:
     total_pnl: float = 0.0
     entry_queue: List[Dict[str, Any]] = field(default_factory=list)
 
-    def get_empty_slot(self) -> Optional[ApexSlot]:
+    def get_empty_slot(self, now_ms: int = 0, cooldown_ms: int = 0) -> Optional[ApexSlot]:
         for slot in self.slots:
             if slot.is_empty():
+                # Enforce slot cooldown: skip if closed too recently
+                if cooldown_ms > 0 and slot.close_ts > 0 and now_ms > 0:
+                    if now_ms - slot.close_ts < cooldown_ms:
+                        continue
                 return slot
         return None
 
