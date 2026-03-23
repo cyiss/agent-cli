@@ -512,7 +512,19 @@ class ApexRunner:
 
             try:
                 guard_result = guard.check(price)
-                if guard_result.action.value == "CLOSE":
+                _close_actions = {"close", "phase1_timeout", "weak_peak_cut"}
+                if guard_result.action.value in _close_actions:
+                    _labels = {
+                        "close": "GUARD CLOSE",
+                        "phase1_timeout": "PHASE1 TIMEOUT (90min no-graduation)",
+                        "weak_peak_cut": "WEAK PEAK CUT (45min, peak ROE < 3%)",
+                    }
+                    log.warning("Slot %d — %s: %s | roe=%.2f%% hw=%.4f",
+                                slot.slot_id,
+                                _labels.get(guard_result.action.value, guard_result.action.value),
+                                guard_result.reason,
+                                guard_result.roe_pct,
+                                guard_result.state.high_water if guard_result.state else 0)
                     results[slot.slot_id] = {
                         "action": "close",
                         "reason": guard_result.reason,
