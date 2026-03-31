@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from common.models import MarketSnapshot
+from common.models import HIP3_DEXS, MarketSnapshot, instrument_to_coin
 
 log = logging.getLogger("hl_proxy")
 
@@ -216,6 +216,14 @@ class MockHLProxy:
             "MKR": "1500.0", "SNX": "3.0", "COMP": "50.0",
         }
 
+    def get_dex_markets(self, dex: str) -> list:
+        """Return empty HIP-3 DEX markets for mock."""
+        return [{"universe": []}, []]
+
+    def get_dex_mids(self, dex: str) -> Dict[str, str]:
+        """Return empty HIP-3 DEX mids for mock."""
+        return {}
+
     def get_fills(self, since_ms: int = 0) -> List[HLFill]:
         """Get fills since a given timestamp."""
         return [f for f in self.fills if f.timestamp_ms >= since_ms]
@@ -264,19 +272,28 @@ class HLProxy:
         _patch_spot_meta_indexing()
 
         base_url = constants.TESTNET_API_URL if self.testnet else constants.MAINNET_API_URL
-        self._info = Info(base_url, skip_ws=True, timeout=10)
+        perp_dexs = [""] + list(HIP3_DEXS.keys())
+        self._info = Info(base_url, skip_ws=True, timeout=10, perp_dexs=perp_dexs)
 
         account = Account.from_key(self.private_key)
         delegated = self._account_address
         if delegated and delegated.lower() != account.address.lower():
             self._address = delegated
-            self._exchange = Exchange(account, base_url, account_address=delegated)
+            self._exchange = Exchange(account, base_url, account_address=delegated, perp_dexs=perp_dexs)
             log.info("HL client: agent=%s trading for %s (testnet=%s)",
                      account.address, delegated, self.testnet)
         else:
             self._address = account.address
-            self._exchange = Exchange(account, base_url)
+            self._exchange = Exchange(account, base_url, perp_dexs=perp_dexs)
             log.info("HL client initialized: %s (testnet=%s)", self._address, self.testnet)
+
+        # Enable HIP-3 DEX abstraction for agent trading
+        if HIP3_DEXS:
+            try:
+                self._exchange.agent_enable_dex_abstraction()
+                log.info("HIP-3 DEX abstraction enabled")
+            except Exception as e:
+                log.warning("Failed to enable HIP-3 DEX abstraction: %s", e)
 
     def set_leverage(self, leverage: int, coin: str = "ETH", is_cross: bool = True):
         """Set leverage for a coin. Call explicitly instead of hardcoding on init."""
@@ -289,8 +306,8 @@ class HLProxy:
 
     @staticmethod
     def _hl_coin(instrument: str) -> str:
-        """Convert internal instrument name to HL coin name (ETH-PERP → ETH)."""
-        return instrument.replace("-PERP", "").replace("-perp", "")
+        """Convert internal instrument name to HL coin name (ETH-PERP → ETH, VXX-USDYP → yex:VXX)."""
+        return instrument_to_coin(instrument)
 
     def get_snapshot(self, instrument: str = "ETH-PERP") -> MarketSnapshot:
         """Get real market data from HL."""
@@ -437,6 +454,16 @@ class HLProxy:
         """Fetch mid prices for all assets."""
         self._ensure_client()
         return self._info.all_mids()
+
+    def get_dex_markets(self, dex: str) -> list:
+        """Fetch HIP-3 DEX metaAndAssetCtxs."""
+        self._ensure_client()
+        return self._info.post("/info", {"type": "metaAndAssetCtxs", "dex": dex})
+
+    def get_dex_mids(self, dex: str) -> Dict[str, str]:
+        """Fetch HIP-3 DEX mid prices."""
+        self._ensure_client()
+        return self._info.post("/info", {"type": "allMids", "dex": dex}) or {}
 
     def get_fills(self, since_ms: int = 0) -> List[HLFill]:
         """Get fills from HL user state."""
