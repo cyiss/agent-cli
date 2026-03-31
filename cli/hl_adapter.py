@@ -13,9 +13,8 @@ import time
 from decimal import Decimal
 from typing import Dict, List, Optional
 
+from common.models import instrument_to_coin
 from parent.hl_proxy import HLFill, HLProxy, MockHLProxy
-
-from cli.strategy_registry import YEX_MARKETS
 
 log = logging.getLogger("hl_adapter")
 
@@ -47,10 +46,7 @@ def _to_hl_coin(instrument: str) -> str:
     YEX markets:     VXX-USDYP -> yex:VXX
                      US3M-USDYP -> yex:US3M
     """
-    yex = YEX_MARKETS.get(instrument)
-    if yex:
-        return yex["hl_coin"]
-    return instrument.replace("-PERP", "").replace("-perp", "")
+    return instrument_to_coin(instrument)
 
 
 class DirectHLProxy:
@@ -94,9 +90,9 @@ class DirectHLProxy:
             )
 
         try:
-            yex = YEX_MARKETS.get(instrument)
-            if yex:
-                snap = self._get_yex_snapshot(instrument, yex["hl_coin"])
+            hl_coin = instrument_to_coin(instrument)
+            if ":" in hl_coin:
+                snap = self._get_yex_snapshot(instrument, hl_coin)
             else:
                 snap = self._hl.get_snapshot(instrument)
 
@@ -457,6 +453,14 @@ class DirectHLProxy:
         """Fetch mid prices for all assets."""
         return self._hl.get_all_mids()
 
+    def get_dex_markets(self, dex: str) -> list:
+        """Fetch HIP-3 DEX metaAndAssetCtxs."""
+        return self._hl.get_dex_markets(dex)
+
+    def get_dex_mids(self, dex: str) -> Dict[str, str]:
+        """Fetch HIP-3 DEX mid prices."""
+        return self._hl.get_dex_mids(dex)
+
     def _to_coin(self, instrument: str) -> str:
         """Map instrument to HL coin symbol."""
         return _to_hl_coin(instrument)
@@ -565,6 +569,14 @@ class DirectMockProxy:
     def get_all_mids(self) -> Dict[str, str]:
         """Return mock mid prices."""
         return self._mock.get_all_mids()
+
+    def get_dex_markets(self, dex: str) -> list:
+        """Return mock HIP-3 DEX markets."""
+        return self._mock.get_dex_markets(dex)
+
+    def get_dex_mids(self, dex: str) -> Dict[str, str]:
+        """Return mock HIP-3 DEX mids."""
+        return self._mock.get_dex_mids(dex)
 
     def place_trigger_order(self, instrument: str, side: str, size: float, trigger_price: float) -> Optional[str]:
         """Place a mock trigger stop-loss order. Returns OID."""

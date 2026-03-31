@@ -10,7 +10,7 @@ import importlib
 import logging
 from typing import Any, Dict, List, Optional
 
-from common.models import MarketSnapshot, StrategyDecision
+from common.models import MarketSnapshot, StrategyDecision, asset_to_instrument
 from sdk.strategy_sdk.base import BaseStrategy, StrategyContext
 
 log = logging.getLogger("strategy_guard")
@@ -150,7 +150,7 @@ class StrategyGuard:
 
                 import time
                 snapshots[name] = MarketSnapshot(
-                    instrument=f"{name}-PERP",
+                    instrument=asset_to_instrument(name),
                     mid_price=mid,
                     bid=bid,
                     ask=ask,

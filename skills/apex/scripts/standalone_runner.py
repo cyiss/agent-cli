@@ -25,6 +25,10 @@ except ImportError:
     class APICircuitBreakerOpen(Exception):  # type: ignore[no-redef]
         pass
 
+from common.models import (
+    asset_matches_allowed, asset_to_coin, instrument_to_coin,
+    get_hip3_dex_ids, HIP3_DEXS,
+)
 from modules.guard_config import GuardConfig, PRESETS as GUARD_PRESETS
 from modules.guard_bridge import GuardBridge
 from modules.guard_state import GuardState, GuardStateStore
@@ -337,6 +341,12 @@ class ApexRunner:
             if "radar_score_threshold" in params:
                 self.radar_guard.config.score_threshold = params["radar_score_threshold"]
                 self.radar_guard.engine = type(self.radar_guard.engine)(self.radar_guard.config)
+            if override.get("markets"):
+                new_markets = override["markets"]
+                if new_markets != self.config.allowed_instruments:
+                    old = self.config.allowed_instruments
+                    self.config.allowed_instruments = new_markets
+                    changed.append(f"allowed_instruments: {old} -> {new_markets}")
             if override.get("preset"):
                 self.state.preset = override["preset"]
             if changed:
@@ -345,6 +355,42 @@ class ApexRunner:
             override_path.unlink()
         except Exception as e:
             log.warning("Config override failed: %s", e)
+
+    def _merge_hip3_markets(self, all_markets: list) -> list:
+        """Merge HIP-3 DEX markets into all_markets if allowed_instruments needs them."""
+        dex_ids = get_hip3_dex_ids(self.config.allowed_instruments)
+        if not dex_ids:
+            return all_markets
+        merged_meta = dict(all_markets[0])
+        merged_universe = list(merged_meta.get("universe", []))
+        merged_ctxs = list(all_markets[1])
+        for dex_id in dex_ids:
+            try:
+                dex_data = self.hl.get_dex_markets(dex_id)
+                if not dex_data or len(dex_data) < 2:
+                    continue
+                prefix = HIP3_DEXS[dex_id]["coin_prefix"]
+                for entry in dex_data[0].get("universe", []):
+                    entry = dict(entry)
+                    name = entry.get("name", "")
+                    if name.startswith(prefix):
+                        entry["name"] = name[len(prefix):]
+                    merged_universe.append(entry)
+                merged_ctxs.extend(dex_data[1])
+            except Exception as e:
+                log.warning("Failed to fetch %s markets: %s", dex_id, e)
+        merged_meta["universe"] = merged_universe
+        return [merged_meta, merged_ctxs]
+
+    def _get_all_mids(self) -> dict:
+        """Fetch mid prices including HIP-3 DEXs if allowed_instruments needs them."""
+        mids = self.hl.get_all_mids()
+        for dex_id in get_hip3_dex_ids(self.config.allowed_instruments):
+            try:
+                mids.update(self.hl.get_dex_mids(dex_id))
+            except Exception:
+                pass
+        return mids
 
     def _persist_account_state(self):
         """Write account state to disk for HTTP API."""
@@ -494,13 +540,13 @@ class ApexRunner:
             return prices
 
         try:
-            all_mids = self.hl.get_all_mids()
+            all_mids = self._get_all_mids()
         except Exception as e:
             log.warning("Failed to fetch mids: %s", e)
             return prices
 
         for slot in active:
-            coin = slot.instrument.replace("-PERP", "")
+            coin = instrument_to_coin(slot.instrument)
             mid = all_mids.get(coin)
             if mid:
                 prices[slot.slot_id] = float(mid)
@@ -556,9 +602,11 @@ class ApexRunner:
         """Run pulse scan and return signal dicts for the engine."""
         try:
             all_markets = self.hl.get_all_markets()
+            all_markets = self._merge_hip3_markets(all_markets)
 
             # Fetch 4h candles for qualifying assets so volume surge detection works
             asset_candles: Dict[str, Dict[str, List[Dict]]] = {}
+            allowed = set(self.config.allowed_instruments) if self.config.allowed_instruments else None
             if len(all_markets) >= 2:
                 universe = all_markets[0].get("universe", [])
                 ctxs = all_markets[1]
@@ -571,9 +619,12 @@ class ApexRunner:
                         continue
                     vol = float(ctx.get("dayNtlVlm", 0))
                     if vol >= self.pulse_guard.config.volume_min_24h and name:
+                        if allowed and not asset_matches_allowed(name, allowed):
+                            continue
                         try:
-                            c4h = self.hl.get_candles(name, "4h", 7 * 24 * 3600 * 1000)
-                            c1h = self.hl.get_candles(name, "1h", 48 * 3600 * 1000)
+                            hl_coin = asset_to_coin(name)
+                            c4h = self.hl.get_candles(hl_coin, "4h", 7 * 24 * 3600 * 1000)
+                            c1h = self.hl.get_candles(hl_coin, "1h", 48 * 3600 * 1000)
                             asset_candles[name] = {"4h": c4h, "1h": c1h}
                             time.sleep(0.05)  # Rate limit: ~20 req/s to avoid HL 429s
                         except Exception:
@@ -584,6 +635,11 @@ class ApexRunner:
                 time.sleep(1.0)
 
             result = self.pulse_guard.scan(all_markets=all_markets, asset_candles=asset_candles)
+            if allowed:
+                result.signals = [
+                    s for s in result.signals
+                    if asset_matches_allowed(s.asset, allowed)
+                ]
             return [
                 {
                     "asset": sig.asset,
@@ -603,11 +659,15 @@ class ApexRunner:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             all_markets = self.hl.get_all_markets()
+            all_markets = self._merge_hip3_markets(all_markets)
 
             # Pre-screen to find which assets need candle data
             assets = self.radar_guard.engine._bulk_screen(all_markets)
             top_assets = self.radar_guard.engine._select_top(assets)
             asset_names = [a.name for a in top_assets]
+            if self.config.allowed_instruments:
+                allowed = set(self.config.allowed_instruments)
+                asset_names = [n for n in asset_names if asset_matches_allowed(n, allowed)]
 
             rcfg = self.radar_guard.config
             btc_4h, btc_1h = [], []
@@ -618,8 +678,9 @@ class ApexRunner:
                 futures[pool.submit(self.hl.get_candles, "BTC", "4h", rcfg.lookback_4h_ms)] = ("_btc", "4h")
                 futures[pool.submit(self.hl.get_candles, "BTC", "1h", rcfg.lookback_1h_ms)] = ("_btc", "1h")
                 for name in asset_names:
+                    hl_coin = asset_to_coin(name)
                     for interval, lookback in [("4h", rcfg.lookback_4h_ms), ("1h", rcfg.lookback_1h_ms), ("15m", rcfg.lookback_15m_ms)]:
-                        futures[pool.submit(self.hl.get_candles, name, interval, lookback)] = (name, interval)
+                        futures[pool.submit(self.hl.get_candles, hl_coin, interval, lookback)] = (name, interval)
 
                 for future in as_completed(futures):
                     key = futures[future]
@@ -639,6 +700,13 @@ class ApexRunner:
                 btc_candles_1h=btc_1h,
                 asset_candles=asset_candles,
             )
+
+            if self.config.allowed_instruments:
+                allowed = set(self.config.allowed_instruments)
+                result.opportunities = [
+                    o for o in result.opportunities
+                    if asset_matches_allowed(o.asset, allowed)
+                ]
 
             return [
                 {
@@ -777,10 +845,10 @@ class ApexRunner:
         if slot is None:
             return
 
-        coin = action.instrument.replace("-PERP", "")
+        coin = instrument_to_coin(action.instrument)
         try:
             # Get current price for size calculation
-            mids = self.hl.get_all_mids()
+            mids = self._get_all_mids()
             mid = float(mids.get(coin, "0"))
             if mid <= 0:
                 log.warning("Cannot enter %s: no mid price", action.instrument)
@@ -871,9 +939,9 @@ class ApexRunner:
         if slot is None or not slot.is_active():
             return
 
-        coin = action.instrument.replace("-PERP", "")
+        coin = instrument_to_coin(action.instrument)
         try:
-            mids = self.hl.get_all_mids()
+            mids = self._get_all_mids()
             mid = float(mids.get(coin, "0"))
             side = "sell" if slot.direction == "long" else "buy"
 
